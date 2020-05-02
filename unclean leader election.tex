@@ -20,48 +20,53 @@
 
 \begin{document}
 
+\section{Disclaimer}
+This document is a work-in-progress and is likely to be loaded with inaccuracies. To be taken with caution.
+
 \section{Objectives}
-The purpose of this document is to describe how tiered log segments are handled to preserve a uniform access to data.
+The purpose of this document is to describe how remote log segments (offloaded to a tiered storage and not available in brokers log directories) are handled to guarantee an access to data agnostic of the storage tier.
 
-\subsection{Data uniformity}
 
-The targeted functional behaviour is to provide the same data to consumers regardless of the origin of these data. This \textit{uniformity} property requires to reproduce the current behaviour of Apache Kafka for which log segments are always accessed locally. Especially, the current specifications under divergence of log lineage should be preserved, and no discrepancy should be introduced in the data a consumer would expect to find with or without tiered storage.
+\subsection{Data Uniform Access}
 
-\subsection{Log lineage divergence and remote duplication}
+One \textbf{possible} functional behaviour could be to provide the same data to consumers regardless of the origin \footnote{i.e., informally, whether the data is stored and read from either the first (local) or second (remote) tier.} of these data. This \textit{uniformity} requires to reproduce the current behaviour of Apache Kafka for which log segments are always accessed locally.
 
-It is possible that a log segment which is offloaded (uploaded) to a tiered storage presents offset overlap or contains duplicated and/or divergent records with already tiered log segments (as after an unclean leader election).
-Such cases will be studied thereafter and the expected behaviour described.
+If \textit{data uniformity} is chosen, the current specifications under divergence of log lineage should be preserved, and no discrepancy should be introduced in the data a consumer would expect to find with or without tiered storage.
 
-\section{Log lineage divergence}
+\subsection{Notations}
+Consider a topic-partition. In this document, we will note $S_i^r$ the i-th segment of a replica $r \in AR$ and $[BO_i^r..EO_i^r]$ the range of offsets of $S_i^r$ from the base offset $BO_i^r$ to the end offset $EO_i^r$. The log end offset at epoch $k$ is referred to as $LEO_k$\footnote{$LEO[LG_K]$ in figures.}.
 
-One consequence of unclean leader election is a possible divergence of log lineages which can happen when leadership of a topic-partition moves to an out-of-sync replica. 
+\section{Preservation of local replica lineage in case of diverging replicas partially or totally tiered}
 
-Let us consider the following illustrative example. A topic-partition is made of two replicas 1 and 2. In order to simplify, we assume a strict correspondance of log segment base and end offsets in both replicas. The cases where this cannot be assumed will be explored later in the document.
+One consequence of unclean leader election is a possible divergence of log lineages which can happen when leadership of a topic-partition moves to an out-of-sync replica. It is possible that a log segment which is offloaded (uploaded) to a tiered storage presents offset overlap or contains duplicated and/or divergent records with already tiered log segments
 
-Let $S_i$ be the i-th log segment in either replica and $BO_i$ and $EO_i$ the base and end offsets of $S_i$. 
-
-Let us assume unclean leader election is enabled. 
+Let us consider the following simplified example. A topic-partition is made of two replicas 1 and 2 on a cluster with tiered storage available and unclean leader election enabled. 
 
 \begin{outline}[enumerate]
-	\1 At $t_1$, replica 1 is the leader and replica 2 is out of ISR. The segment $S_i$ has been rolled over in replica 1, for which $S_{i+1}$ is the active segment. Since the ISR is reduced to the leader replica, the leader high watermark of the leader can progress and follow the log end offset. Assume there is no transactional records, so that the log stable offset corresponds to the leader high watermark, or, without loss of generality, assume the LSO points to an offset of $S_{i+1}$. The segment $S_i$ is therefore eligible for tiering. Assume the leader of replica 1 offloads successfully $S_i$. Assume that afterwards, that segment is locally deleted following the configured log's retention policy.
-	\1  At $t_2$, replica 1 become offline and replica 2 becomes the only online replica of the topic-partition.
-	\1  At $t_3$, replica 2 uncleanly acquires the leadership of the topic-partition and the leader epoch is incremented from $k$ to $k + 1$.
-	\1  At $t_4$, replica 1 is online and becomes a follower of replica 2. It starts replicating with a fetch offset set to its high watermark, the last offset of segment $S_{i+1}$. This offset is ahead of the latest offset of replica 2, and the first replication fetch request fails (index out of bound). The follower then fetches the LEO for generation $k+1$ or $LEO_{k+1}$. It truncates its local segment to the returned offset.
-	\2 Without tiered storage - segment $S_i$ was deleted from the local storage and the local log start offset is ahead of $LEO_{k+1}$. Therefore, the follower truncates fully (i.e. delete all current segments) and creates a new segment with a start offset equal to $LEO_{k+1}$, and start fetching from that offset.
-	\2 With tiered storage - a segment which includes $LEO_{k+1}$ in its offset range is present in the tiered storage. 
-	\3 This segment can be ignored and the behaviour would be the same as without tiered storage.
-	\3 The segment can be onloaded and promoted back to an active segment, truncated to $LEO_{k+1}$, and replication would start from that offset. Some records of replica 1 diverge from replica 2.
-	\1 Replica 2 ingests more records. Segment $S_i$ is rolled over. Because it is part of the log lineage at generation $k+1$. and offloaded to the tiered storage.
-	
-
-	
+	\1 At $t_1$, replica 1 is the leader and replica 2 is out of the ISR set. The segment $S_i^1$ has been rolled over, and $S_{i+1}^1$ is the active segment or replica 1. Since the ISR is reduced to the leader replica, the leader high watermark can progress to the log end offset $LEO_k$. Assume there is no transactional records, so that the log stable offset corresponds to the leader high watermark, so that segment $S_i^1$ is eligible for tiering. Assume the leader 1 offloads successfully $S_i^1$ which is mapped to the unique ID $u_k$. Assume that afterwards, that segment is locally deleted to honor the configured log's retention policy.
+	\1  At $t_2$, replica 1 becomes offline and replica 2, then only live replica of the topic-partition, is elected as the leader. Leader generation is incremented from $k$ to $k + 1$.
+	\1  At $t_3$, replica 1 is back online and becomes a follower of replica 2. It truncates its local log to $LEO_{k+1}$, which is outside of the range of offsets covered by the local segments. However, assume that $LEO_{k+1} \in [BO_i^1..EO_i^1]$ which is a range of offsets covered in the tiered storage. Also, note that by construction of this example, the leader epoch of replica 1 before becoming follower is $k$. The follower 1 then decides to onload the segment with the key $u_k$. Truncation to $LEO_{k+1}$ then occurs as would have initially been for a local segment. In this example, this results in few diverging records, which were produced to $S_j^2$ but not replicated to $S(u_k)$.
+	\1 At $t_4$, replica 2 ingested enough records for the segment $S_j^2$ to be rolled-over and tiered, assuming the necessary conditions are met. This results in two segments in the tiered storage with duplicated and divergent records.
 \end{outline}
 
+The principle guiding this proposal is to offer a uniform data access to consumers. This means the behaviour needs to be exactly identical whether the $S_i^1$ is remote or local.
+
 \begin{center}
-	\includegraphics[scale=0.45]{unclean1.png}
-	\captionof{figure}{}
+	\includegraphics[scale=0.4]{unclean1.png}
+	\captionof{figure}{Use of tiered segments to preserve local replica lineage.}
 \end{center}
 
+Shoud the segments $S(u_k)$ and $S(u_{k+1})$ be reconciled or deleted? 
+
+Let us consider this follow-up use case, where a third replica is added to the previous example. This replica shares the same lineage as replica 1 up to generation $k$, then becomes offline at the same time as replica 1. It comes back online long after the latter, and replica 2 has produced segments $S_j^2$, $S_{j+1}^2$ and $S_{j+2}^2$. Assume $S_i^1$ is replicated by $S_i^3$ in replica 3, and that the latter is not available locally as it was deleted based on log retention policies. Replica 3 should follow the same replication steps as replica 1 to construct its lineage post-generation $k$.
+
+The problem is segments $S_j^2$, $S_{j+1}^2$ and $S_{j+2}^2$ may be tiered and not available locally. That means that, to reconstruct its lineage, replica 3 would have to replicate segments from the tiered storage. One could argue that replica 3 could just replicate borrow the same lineage as replica 1 - but nothing guarantees lineage has not diverged after generation $k$ ! To illustrate this, imagine that before replica 3 is back online, replica 2 goes offline and replica 1 takes back leadership, ingests some records beyond $LEO_{k+1}$, then goes offline again, then replica 2 comes back and re-acquire leadership and resume ingesting. To preserve iso-functionality with local log segments, replica 3 needs to follow the exact same replication step to construct its lineage - and in the previous example, once replica 3 catches up with replica 2, lineages or replica 1 and 3 have diverged !
+
+Note that evicting segments from the tiered storage for any of the replica \textit{lineage} could lead to catastrophic data loss. Consider the scenario where a topic-partition has three replicas, one of which has been offline for a month due to a misconfiguration. During a maintenance operation, the two "healthy" partitions are put offline and the "invalid" partition brought back online, empty. Unclean leader election is enabled and therefore the partition becomes leader. The one-month worth of data of the "healthy" replicas should be preserved, regardless of how many offsets and remote segments overlap with the new replica.
+
+To allow tiered storage to preserve the durability guarantees of Apache Kafka, even under unclean leader election, all replica lineages would need to be kept.
+
+\section{Objectives}
 
 
 \end{document}
