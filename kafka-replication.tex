@@ -57,7 +57,7 @@ Figure \ref{fig:leader-epoch-cache} illustrates the iterative process used to re
 
 \begin{figure}[h!]
 	\includegraphics[scale=0.53]{img/leader-epoch-cache.png}
-	\captionof{figure}{Round-trips between a leader and follower during the collaborative resolution of the offset to truncate the follower replica to.}
+	\captionof{figure}{Round-trips between a leader and follower during the collaborative resolution of the offset to truncate the follower replica to. After truncation and replication, replica 1 tacks the same sequence of epoch to start offset vectors. This sequence is reconstructed as fetch responses are processed by the follower, with the leader epoch provided in each record batch. The leader has registered the latest vector for generation 10. However, the follower will only ad it to its local sequence file when the first batch under that epoch is appended.}
 	\label{fig:leader-epoch-cache}
 \end{figure}
 
