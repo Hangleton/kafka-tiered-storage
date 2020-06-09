@@ -32,14 +32,31 @@
 \end{abstract}
 
 \section{Motivation}
-\epigraph{\textit{"At its heart a Kafka partition is a replicated log"}}{Reference Documentation \cite{RD1}}
+\epigraph{\textit{"At its heart a Kafka partition is a replicated log"}}{Kafka online documentation \cite{RD1}}
 
-As stated in the reference documentation and often echoed \cite{KDG}, replication in Apache Kafka is one of its most fundamental characteristic. The replication protocol which Kafka implements and the guarantees it provides are well documented \cite{KIP101} \cite{KIP279}, and explain how and why a consistent lineage for a topic-partition is preserved across its replicas irrespective of the nature and frequency of fail-overs that topic-partition experiences. 
+As stated in the reference documentation and echoed in \cite{KDG}, replication in Apache Kafka is one of its most fundamental characteristic. The replication protocol which Kafka implements and the guarantees it provides are well documented \cite{KIP101} \cite{KIP279}, and explains how and why a consistent lineage for a topic-partition is preserved across its replicas irrespective of the nature and frequency of fail-overs that topic-partition experiences. 
 
 One of the premise of the integration of data tiering in Apache Kafka is to provide users with a uniform experience of access to data irrespective of its provenance (the storage tier where it comes from). This especially means data lineage is kept consistent when tiered segments are the source of data and the specifications which apply to local replicas are still honored when tiered segments contribute to a replica's lineage.
 
-This document assumes some level of familiarity with the replication protocol implemented in Kafka and how replica lineage is maintained across replicas. At a very high level, this protocol is based on \textit{log truncation}, which relies on replica history, materialized by a list of generation to start offset vectors, which evolves with cluster events and leadership migration.
+This document assumes some level of familiarity with the replication protocol implemented in Kafka and how replica lineage is maintained across replicas. At a very high level, this protocol is based on \textit{log truncation}, which relies on replica history, materialized by a list of generation to start offset vectors, which evolves with cluster events and leadership migration. At a given point in time, the lineage of a replica 
 
+It also assumes familiarity with the design of tiered storage in Kafka, described in KIP-405 \cite{KIP405}.
+
+\section{Replica lineage and tiered segments}
+
+Consider a topic-partition with three replicas which experiences leadership migrations. The lineage tree of the topic-partition is provided below, along with the leadership assignments throughout the sequence of generations (leader epochs) of this topic-partition.
+
+\subsubsection{Notations and simplifications}
+
+We will informally select offsets from the available replicas at points of interest. An offset is written $\theta$ and indexed such that $\theta_{i+1}$ is written \textit{after} $\theta_i$ for any given index $i$. The use of generation makes this serialization possible. Note that $(\theta_i)_{i \in \mathbb{N}}$ is not necessarily monotonic.
+
+A leader epoch is written $g$ and is indexed such that $g_{i+1}$ is younger than $g_i$. Note that, for simplicity, the exact sequence of incremental leader epochs is not reproduced. For instance, when replica 2 and 3 go offline, leader epoch is expected to be incremented at least twice, but we will simply refer to the new leader epoch as $g_2$ as naturally following $g_1$, even if they differ by more than one increment.
+
+\subsubsection{Lineage tree of the topic-partition}
+
+
+
+\newpage
 \bibliographystyle{plain}
 \bibliography{tiered-storage-replication}{}
 \end{document}
