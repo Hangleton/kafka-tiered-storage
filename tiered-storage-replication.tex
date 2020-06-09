@@ -1,0 +1,45 @@
+\documentclass{article}
+
+\usepackage{arxiv}
+\usepackage[ruled,vlined]{algorithm2e}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage{cite}
+\usepackage{pdflscape}
+\usepackage{listings}
+\usepackage{outlines}
+\usepackage{tikz}
+\usepackage{epigraph}
+\usepackage{natbib} 
+\usepackage{url}
+
+\newcommand*\circled[1]{\tikz[baseline=(char.base)]{
+		\node[shape=circle,draw,inner sep=1pt] (char) {#1};}}
+
+\title{Preservation of log lineage under data tiering in Kafka}
+
+\begin{document}
+\maketitle \thispagestyle{fancy2}
+\begin{abstract}
+	The objective of this document is to elaborate on the design of a protocol which ensures the lineage of logs in Apache Kafka is preserved  when segments are moved to and accessed from external storage tier.
+\end{abstract}
+
+\section{Motivation}
+\epigraph{\textit{"At its heart a Kafka partition is a replicated log"}}{Reference Documentation \cite{RD1}}
+
+As stated in the reference documentation and often echoed \cite{KDG}, replication in Apache Kafka is one of its most fundamental characteristic. The replication protocol which Kafka implements and the guarantees it provides are well documented \cite{KIP101} \cite{KIP279}, and explain how and why a consistent lineage for a topic-partition is preserved across its replicas irrespective of the nature and frequency of fail-overs that topic-partition experiences. 
+
+One of the premise of the integration of data tiering in Apache Kafka is to provide users with a uniform experience of access to data irrespective of its provenance (the storage tier where it comes from). This especially means data lineage is kept consistent when tiered segments are the source of data and the specifications which apply to local replicas are still honored when tiered segments contribute to a replica's lineage.
+
+This document assumes some level of familiarity with the replication protocol implemented in Kafka and how replica lineage is maintained across replicas. At a very high level, this protocol is based on \textit{log truncation}, which relies on replica history, materialized by a list of generation to start offset vectors, which evolves with cluster events and leadership migration.
+
+\bibliographystyle{plain}
+\bibliography{tiered-storage-replication}{}
+\end{document}
