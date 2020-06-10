@@ -23,50 +23,48 @@
 \newcommand*\circled[1]{\tikz[baseline=(char.base)]{
 		\node[shape=circle,draw,inner sep=1pt] (char) {#1};}}
 
-\title{Preservation of log lineage under data tiering in Kafka}
+\title{Lineage of tiered data in Apache Kafka}
 
 \begin{document}
 \maketitle \thispagestyle{fancy2}
 \begin{abstract}
-	The objective of this document is to elaborate on the design of a protocol which ensures the lineage of logs in Apache Kafka is preserved  when segments are moved to and accessed from external storage tier.
+	The objective of this document is to elaborate on the design of "tiered storage" to ensure the lineage of logs in Apache Kafka is preserved  when segments are moved to and accessed from external storage tiers.
 \end{abstract}
 
 \section{Motivation}
-\epigraph{\textit{"At its heart a Kafka partition is a replicated log"}}{Kafka online documentation \cite{RD1}}
+\epigraph{\textit{"At its heart a Kafka partition is a replicated log"}}{Apache Kafka online documentation \cite{RD1}}
 
-As stated in the reference documentation and echoed in \cite{KDG}, replication in Apache Kafka is one of its most fundamental characteristic. The replication protocol which Kafka implements and the guarantees it provides are well documented \cite{KIP101} \cite{KIP279}, and explains how and why a consistent lineage for a topic-partition is preserved across its replicas irrespective of the nature and frequency of fail-overs that topic-partition experiences. 
+As stated in the reference documentation and echoed in \cite{KDG}, replication in Apache Kafka is one of its most fundamental characteristic. The replication protocol which Kafka implements and the guarantees it provides are well documented \cite{KIP101} \cite{KIP279}, and explains how and why a consistent lineage for a topic-partition is preserved across its replicas irrespective of the nature and frequency of fail-overs this topic-partition experiences. 
 
 One of the premise of the integration of data tiering in Apache Kafka is to provide users with a uniform experience of access to data irrespective of its provenance (the storage tier where it comes from). This especially means data lineage is kept consistent when tiered segments are the source of data and the specifications which apply to local replicas are still honored when tiered segments contribute to a replica's lineage.
 
-This document assumes some level of familiarity with the replication protocol implemented in Kafka and how replica lineage is maintained across replicas. At a very high level, this protocol is based on \textit{log truncation}, which relies on replica history, materialized by a list of generation to start offset vectors, which evolves with cluster events and leadership migration. At a given point in time, the lineage of the log of a topic-partition is that of the leader replica of that topic-partition. It is possible for the end offset of the log to decrease when leadership is assigned to a different replica.
-
-It also assumes familiarity with the design of tiered storage in Kafka, described in KIP-405 \cite{KIP405}.
+This document assumes some level of familiarity with the replication protocol implemented in Kafka and how replica lineage is maintained across replicas. At a very high level, this protocol is based on \textit{log truncation}, which relies on replica history, materialized by a list of generation to start offset vectors, which evolves with cluster events and leadership migration. At a given point in time, the lineage of the log of a topic-partition is that of the leader replica of that topic-partition. It is possible for the end offset of the log to decrease when leadership of a topic-partition is migrated.
 
 \section{Replica lineage and tiered segments}
 
-Consider a topic-partition with three replicas which experiences leadership migrations. The lineage tree of the topic-partition is provided below, along with the leadership assignments throughout the sequence of generations (leader epochs) of this topic-partition.
+The following discussion is based on an example which consists in a topic-partition with three replicas and which experiences leadership migrations. The lineage tree of the topic-partition is provided in diagrams along with the leadership assignments throughout the sequence of generations for this topic-partition.
 
 \subsubsection{Notations and simplifications}
 
 \textbf{Serialized offsets}
 
-We will informally select offsets from the available replicas at points of interest. An offset is written $\theta$ and indexed such that $\theta_{i+1}$ is written \textit{after} $\theta_i$ for any given index $i$. The use of generation makes this serialization possible. Note that $(\theta_i)_{i \in \mathbb{N}}$ is not necessarily monotonic.
+We will informally select offsets from the available replicas at points of interest. An offset is written "$\theta$" and informally indexed such that $\theta_{i+1}$ is written on a replica "after" $\theta_i$ for any given index $i$. The use of leader epochs makes this serialization possible and ensure the word \textit{after} is meaningful in this context. Note that $(\theta_i)_{i \in \mathbb{N}}$ is not necessarily monotonic. 
 
 \textbf{Generations}
 
-A leader epoch is written $g$ and is indexed such that $g_{i+1}$ is younger than $g_i$. Note that, for simplicity, the exact sequence of incremental leader epochs is not reproduced. For instance, when replica 2 and 3 go offline in figure \ref{fig:lineage-tree-1}, leader epoch is expected to be incremented at least twice, but we will simply refer to the new leader epoch as $g_2$ even if it differs from $g_1$ by more than one increment.
+A leader epoch is written $g$ and is indexed such that $g_{i+1}$ is "younger" than $g_i$. Note that, for simplicity, the exact sequence of incremental leader epochs is not reproduced. For instance, when replica 2 and 3 go offline in figure \ref{fig:lineage-tree-1}, the leader epoch of the topic-partition is expected to be incremented at least twice, but we will simply refer to the new leader epoch as $g_2$ even if it differs from $g_1$ by more than one logical increment.
 
 \subsubsection{Lineage tree of the topic-partition}
 
 Figure \ref{fig:lineage-tree-1} shows the content of the three replicas over generations depicted in figure \ref{fig:seq-generations}.
 
 \begin{outline}[enumerate]
-\1 The root of the tree corresponds to the subsegment of the range $[\theta_1, \theta_2]$, which is assumed to be common to all three replicas.
-\1 At generation $g_2$, replicas 2 and 3 become offline and replica 1 ingest records from $\theta_{2} + 1$ to $\theta_3$. The segment with base offset $\theta_1$ and end offset $\theta_3$ is offloaded by replica 1\footnote{Here, the word \textit{replica} informally refers to the hosting \textit{broker}.}, with the leader epoch at the time of the offload, $g_2$.
+\1 The root of the tree corresponds to the subsegment in the range $[\theta_1, \theta_2]$, which is assumed to be common to all three replicas.
+\1 At generation $g_2$, replicas 2 and 3 become offline and replica 1 ingest records from $\theta_{2} + 1$ to beyond $\theta_3$. The segment with base offset $\theta_1$ and end offset $\theta_3$ is offloaded by replica 1\footnote{Here, the word \textit{replica} informally refers to the hosting \textit{broker}.}, with the leader epoch at the time of the offload, $g_2$.
 \1 Replica 1 become offline and replica 2 and 3 now contribute to the ISR set. Replica 3 is the leader. The segment with the offset range $[\theta_1, \theta_4]$ is offloaded at generation $g_3$.
 \1 Replica 2 falls behind and is moved out of ISR. Replica 3 continues to ingest and offload the segment ranging from offsets $[\theta_4 + 1, \theta_5]$ at generation $g_4$. This is possible because the ISR is reduced to its leader and the leader high watermark can freely moves forward.
 \1 Leadership is transferred to replica 2 and replica 3 is put offline. The ISR set is now $\{2\}$. Data continues to be ingested.
-\1 Replica 3 is back online. Generation is incremented to $g_6$ on this event. Truncation is performed, which physically deletes the segment $[\theta_{5}+1, \theta_{5}+2]$. The segment offloaded at generation $g_4$ is only in the external storage at truncation time. This segment is now \textit{orphan}, because no matter the following life events affecting the cluster, there is no going back and that part of the lineage is forever discarded. Another way to see it is that the edge from the prefix $[\theta_2+1,\theta_4]$ to $[\theta_4+1,\theta_6]$ in the lineage tree can be removed.
+\1 Replica 3 is back online. Generation is incremented to $g_6$ when it joins the cluster. Truncation is performed, which physically deletes the segment $[\theta_{5}+1, \theta_{5}+2]$. The segment offloaded at generation $g_4$ is only in the external storage at truncation time. This segment is now "\textit{orphan}", because no matter the following life events affecting the cluster, there is no going back and that part of the lineage is forever discarded. Another way to see it is that the edge from the prefix $[\theta_2+1,\theta_4]$ to $[\theta_4+1,\theta_6]$ in the lineage tree can be removed.
 \1 The segment $[\theta_2+1,\theta_6]$ is rolled over and eventually become eligible for tiering. It is offloaded at generation $g_6$ by replica 2.
 \end{outline}
 
@@ -93,7 +91,7 @@ The content of the tiered storage after these events is represented in figure \r
 	\label{fig:tiered-storage}
 \end{figure}
 
-\subsubsection{Tiering reconcilation on become-leader}
+\subsubsection{Reconcilation between local and tiered segments on become-leader}
 
 A replica which becomes the leader of a topic-partition, and detects tiered segments for that topic-partition, tries to identify which parts of its lineage are present in the tiered storage. This allows the leader a) to know which of the local segments need to be offloaded, if any, b) to know what is the largest offset in tiered segments which is part of its lineage.
 
