@@ -1,7 +1,6 @@
 \documentclass{article}
 
 \usepackage{arxiv}
-\usepackage[ruled,vlined]{algorithm2e}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{url}
@@ -19,6 +18,7 @@
 \usepackage{epigraph}
 \usepackage{natbib} 
 \usepackage{url}
+\usepackage{algorithm,algpseudocode}
 
 \newcommand*\circled[1]{\tikz[baseline=(char.base)]{
 		\node[shape=circle,draw,inner sep=1pt] (char) {#1};}}
@@ -36,7 +36,7 @@
 
 As stated in the reference documentation and echoed in \cite{KDG}, replication in Apache Kafka is one of its most fundamental characteristic. The replication protocol which Kafka implements and the guarantees it provides are well documented \cite{KIP101} \cite{KIP279}, and explains how and why a consistent lineage for a topic-partition is preserved across its replicas irrespective of the nature and frequency of fail-overs this topic-partition experiences. 
 
-One of the premise of the integration of data tiering in Apache Kafka is to provide users with a uniform experience of access to data irrespective of its provenance (the storage tier where it comes from). This especially means data lineage is kept consistent when tiered segments are the source of data and the specifications which apply to local replicas are still honored when tiered segments contribute to a replica's lineage.
+Introducing a feature which would weaken the replication guarantees offered by Kafka is a red herring. Over time, Kafka gracefully evolved and built on top of existing replication protocol to strengthen replication semantic  One of the premise of the integration of data tiering in Apache Kafka is to provide users with a uniform experience of access to data irrespective of its provenance (the storage tier where it comes from). This especially means data lineage is kept consistent when tiered segments are the source of data and the specifications which apply to local replicas are still honored when tiered segments contribute to a replica's lineage.
 
 This document assumes some level of familiarity with the replication protocol implemented in Kafka and how replica lineage is maintained across replicas. At a very high level, this protocol is based on \textit{log truncation}, which relies on replica history, materialized by a list of generation to start offset vectors, which evolves with cluster events and leadership migration. At a given point in time, the lineage of the log of a topic-partition is that of the leader replica of that topic-partition. It is possible for the end offset of the log to decrease when leadership of a topic-partition is migrated.
 
@@ -91,13 +91,73 @@ The content of the tiered storage after these events is represented in figure \r
 	\label{fig:tiered-storage}
 \end{figure}
 
-\subsubsection{Reconcilation between local and tiered segments on become-leader}
+\subsubsection{Reconcilation between local and tiered segments on \texttt{become-leader}}
 
-A replica which becomes the leader of a topic-partition, and detects tiered segments for that topic-partition, tries to identify which parts of its lineage are present in the tiered storage. This allows the leader a) to know which of the local segments need to be offloaded, if any, b) to know what is the largest offset in tiered segments which is part of its lineage.
+A replica which becomes the leader of a topic-partition, and detects tiered segments for that topic-partition, tries to identify which parts of its lineage are present in the tiered storage. 
+
+A proposed approach is as follows: the replica which becomes a leader will try to find to find a leader epoch which is common to tiered segments and the local epoch cache, following an approach similar to the resolution of the truncation offset \cite{KIP279}.
+
+Multiple outcomes can result (figure \ref{fig:become-leader}).
+\begin{outline}[enumerate]
+	\1 \textbf{Case \circled{A}}: A common epoch $g$ exists. The end offset for the segments offloaded at that generation is $\theta$, and the local start offset at generation $g$ is $\theta + 1$.
+	\1 \textbf{Case \circled{B}}:  A common epoch $g$ exists. The end offset $\theta + \Delta$ is ahead of the local start offset $\theta$ at generation $g$. This can happen for instance if a tiered segment was not deleted on the local replica, and/or the base offsets of the segments of the replica were not perfectly aligned with those of the previous leader, resulting in shifted roll-overs.
+	\1 \textbf{Case \circled{C}}:  A common epoch $g$ exists. The end offset $\theta + \Delta$ is ahead of the local log end offset. This can happen if the replica was previously out of the ISR set, and uncleanly elected as a leader.
+	\1 \textbf{Case \circled{D}}:  A common epoch $g$ exists. There is a gap between the end offset of the segments offloaded and the local start offset at generation $g$. This could happen in pathological cases, for instance after a replica recovered from a hard failure.
+	\1 \textbf{Case \circled{E}}:  No common epoch can be found between tiered segments and the local epochs, no part of the local log is present in the tiered storage. That could be the case that historically, no part of the replica has ever been offloaded \circled{E.1}. However, there could be tiered segments which lineage was removed from the local epoch cache (log prefix truncation via \texttt{LeaderEpochFileCache\#truncateFromStart}) \circled{E.2}.
+\end{outline}
+
+\begin{figure}[h!]
+	\centering
+	\includegraphics[scale=0.6]{become-leader.png}
+	\captionof{figure}{.}
+	\label{fig:become-leader}
+\end{figure}
+
+In order to handle case \circled{E.2}, the epoch to start offset vectors for the epochs which are fully "tiered" (i.e. for which all segments are in the external storage and do not have remaining local copy) will be preserved. This will be in a file different from the local epoch cache to ensure no conflict can be introduced with existing functionalities.
+
+The new leader will then derive the \textit{remote end offset} (\textbf{REO}), which is relative to a given leader epoch.
+
+\begin{outline}[enumerate]
+	\1 \textbf{Case \circled{A}}: The REO can be set to $\theta$ or ($\theta +1$ depending on the convention adopted).
+	\1 \textbf{Case \circled{B}}: The records present simultaneously in the external and local storage are guaranteed to match. The remote end offset will be set to $\theta+\Delta$. Any segment with base offset and end offset within the range $[\theta, \theta+\Delta]$ will not be offloaded.
+	\1 \textbf{Case \circled{C}}: In this case, we will want to consider the lineage of the new leader to be consistent with the existing behaviour with local segments. The REO will be set to $\theta - \Delta$, and the portion of the log between  
+\end{outline}
+
+Algorithm \ref{alg:reo} tries to find a leader epoch which is common to tiered segments and the local epoch cache, following an approach similar to the resolution of the truncation offset \cite{KIP279}.
+
+Let $\theta(g)$ be the start offset of generation $g$ in the leader epoch cache and $\rho(g)$ be the end offset of all segments offloaded at generation $g$, which is assumed to be accessed from metadata associated to tiered segments.
+
+We use the list of generation to end offset $\mathcal{G}=(g_k, g_k \mapsto \rho(g_k)])_{k \in \{1,...,n\}}$, and the leader epoch cache $\mathcal{E}=(h_l, h_l \mapsto \theta(h_l))_{l \in \{1,...,m\}}$. The function \textsc{EpochEndOffset} corresponds to \texttt{LeaderEpochFileCache\#endOffsetFor}.
+
+\begin{algorithm}[H]
+	\caption{Resolution of the replica's REO on \texttt{LeaderAndIsr\#become-leader}}
+	\label{alg:reo}
+	
+	\begin{algorithmic}[1]
+		\Function{FindRemoteEndOffset}{$(g_k)_{k \in \{1,..,n\}}$, $rho$, $(h_h)_{h \in \{1,..,m\}}$, $\theta$}
+			\State	$(i,j) \leftarrow (n-1,m-1)$
+			\State	$(g_{-1}, h_{-1}) \leftarrow (-1,-1)$
+			\\
+			\While{$g_i \neq h_j$}
+				\While{$g_i > h_j$}
+					\State $i \leftarrow i - 1$
+				\EndWhile
+				\While{$h_j > g_i$}
+					\State $j \leftarrow j - 1$
+				\EndWhile
+			\EndWhile
+			\\
+			\If{$i = -1$}
+				\State \Return $-1$ // No common lineage
+			\EndIf
+			\\
+			\State \Return \textsc{Min}($1 + \theta_E(g_i)$, \textsc{EpochEndOffset}($h_j$,$\theta$))
+			\\
+		\EndFunction
+	\end{algorithmic}	
+\end{algorithm}
 
 Looking back at the previous example, if a replica happened to become the leader of the topic-partition, it would use its local epoch cache and the history of lineage of this topic-partition covered in the tiered storage, represented as a graph $\mathcal{G}=(\theta,g)$ which provides the ranges of offsets of the tiered segments along with the epoch of the leader which offloaded them.
-
-
 
 guarantee the following property: for any given offset in a segment of the leader replica which is present in the tiered storage, prior offsets which make up the contemporary\footnote{i.e. excluding segments evicted from the local and/or tiered storage} lineage of the leader replica are also present in the tiered storage. Informally, that means there is no "gap" in the range of offsets which are present in the tiered storage, without a segment which would only be available locally between two tiered segments.
 
@@ -114,10 +174,7 @@ When replica 1 becomes online and initiates replication from replica 2, it needs
 All the follower need to know is the last offset of the latest tiered segment according to the current replica lineage. In the case of the lineage tree in figure \ref{fig:lineage-tree-1}, that would be $\theta_6$. Note that this is not necessarily the \textit{latest} segment offloaded, nor the largest offset of all the segments offloaded for that topic-partition ($\theta_6 < \theta_5$).
 
 
-
-
-
-fd
+\section{Garbage collection of orphan segments}
 
 \newpage
 \bibliographystyle{plain}
