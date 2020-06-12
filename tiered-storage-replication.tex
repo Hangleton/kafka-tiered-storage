@@ -33,6 +33,7 @@
 
 \tableofcontents
 
+\newpage
 \section{Motivation}
 \epigraph{\textit{"At its heart a Kafka partition is a replicated log"}}{Apache Kafka online documentation \cite{RD1}}
 
@@ -149,7 +150,7 @@ An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the
 	\item $\phi$ is a map such that $\phi(g)$ represents the start offset of generation $g$ in the leader epoch cache.
 	\item $\psi$ is a map such that $\psi(g)$ represents the end offset of all segments tiered for the generation $g$.
 	\item The input of the algorithm are the list of generation to end offset $(g_k, \psi(g_k))_{k \in \{1,...,n\}}$, and the leader epoch cache $(h_l, \phi(h_l))_{l \in \{1,...,m\}}$.
-	\item The function \textsc{EpochEndOffset} corresponds to \texttt{LeaderEpochFileCache\#endOffsetFor} and implicitly has access to the map $\phi$.
+	\item The function \textsc{EndOffsetFor} corresponds to \texttt{LeaderEpochFileCache\#endOffsetFor} and has implicitly access to the map $\phi$.
 \end{itemize} 
 
 \begin{algorithm}[h!]
@@ -178,7 +179,7 @@ An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the
 			\\
 			\State // Get the latest offset of tiered segments and the local start offset, for the generation $g_i = h_j$.
 			\State $\theta_R \leftarrow \psi(g_i)$
-			\State $\theta_E \leftarrow  \textsc{EpochEndOffset}(h_j)$
+			\State $\theta_E \leftarrow  \textsc{EndOffsetFor}(h_j)$
 			\\
 			\If{$\theta_R > \theta_E$}
 			\State \Return $\theta_E - 1$ // Case \circled{C}
@@ -193,15 +194,15 @@ An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the
 
 \subsection{Reconciliation between local and tiered segments on \texttt{become-follower}}
 
-When a replica initiates replication from a leader, it needs to know which part of its lineage is tiered, to avoid replicating it from the leader, or expecting the tiered segments not be found locally. This requires two things:
+\subsubsection{Post-truncation REO propagation}
 
-\begin{outline}[enumerate]
-\1 Reconciliate its local segments with the lineage $\mathcal{L}$ of the leader it replicates from. This is implemented with the truncation protocol.
-\1 Reconciliate 
-\end{outline}
+When a replica initiates replication from a leader, it needs to know which part of the leader's lineage is tiered, to avoid replicating the corresponding segments from the leader.
 
+Through the truncation protocol, the follower and leader collaboratively resolves the truncation offset $\theta_T(g)$ for the most recent generation $g$ they have in common. With local segments, the follower then starts fetching from the offset $\theta_T(g)$. Assume a segment which includes the truncation offset is tiered. The leader may contain (or not) a local copy of a segment which includes this offset. Irrespective of local availability, we expect the follower not to replicate it.
 
-All the follower need to know is the last offset of the latest tiered segment according to the current replica lineage. In the case of the lineage tree in figure \ref{fig:lineage-tree-1}, that would be $\theta_6$. Note that this is not necessarily the \textit{latest} segment offloaded, nor the largest offset of all the segments offloaded for that topic-partition ($\theta_6 < \theta_5$).
+In order to adjust its initial fetch offset, the follower needs to know what the REO on the leader is. There are multiple approaches for the leader to provide followers with its REO.
+
+One of it could be 
 
 Consider the example described in section \ref{lineage_tree}. 
 
