@@ -58,6 +58,7 @@ A leader epoch is written $g$ and is indexed such that $g_{i+1}$ is "younger" th
 
 \subsection{Lineage tree}
 
+\label{lineage_tree}
 \textbf{Figure \ref{fig:lineage-tree-1}} provides the lineage tree of the log, where each replica exhibits a specific history.
 The timeline of events which led to this tree are as follows:
 
@@ -75,7 +76,7 @@ The content of the tiered storage after these events is represented in \textbf{f
 
 \begin{figure}[H]
 	\centering
-	\includegraphics[scale=0.46]{lineage-tree-1.png}
+	\includegraphics[scale=0.45]{lineage-tree-1.png}
 	\captionof{figure}{Lineage tree of the topic-partition while replica 1 is offline. The generation-to-start-offset vectors, which build the leader epoch cache, are represented on the right.}
 	\label{fig:lineage-tree-1}
 \end{figure}
@@ -89,34 +90,42 @@ The content of the tiered storage after these events is represented in \textbf{f
 
 \begin{figure}[H]
 	\centering
-	\includegraphics[scale=0.52]{tiered-storage.png}
-	\captionof{figure}{Content of the tiered storage. Each segment is conceptually associated to a generation and a range of offsets which uniquely identify it in the history of the topic-partition across all replicas.}
+	\includegraphics[scale=0.54]{tiered-storage.png}
+	\captionof{figure}{On the left: tiered segments. On the right: a representation of lineage information associated to these segments.}
 	\label{fig:tiered-storage}
 \end{figure}
 
 \newpage
-\section{Lineage reconcilation with tiered segments}
+\section{Analysis of lineage reconcilation with tiered segments}
 
-\subsubsection{Reconcilation between local and tiered segments on \texttt{become-leader}}
+\subsection{Reconcilation between local and tiered segments on \texttt{become-leader}}
+
+\subsubsection{Remote End Offset}
 
 A replica which becomes the leader of a topic-partition, and detects tiered segments for that topic-partition, tries to identify which parts of its lineage are present in the tiered storage. 
 
 A proposed approach is as follows: the replica which becomes a leader will try to find a leader epoch which is common to tiered segments and the local epoch cache, following an approach similar to the resolution of the truncation offset \cite{KIP279}. It then chooses an offset depending on the relative position of the latest offset of the tiered segments and the local end offset.
 
-Multiple outcomes can result (figure \ref{fig:become-leader}).
+Multiple outcomes can result. In figure \ref{fig:become-leader}, the following notations are used:
+
+\begin{itemize}
+	\item $\theta_R(g)$ is the last offset of all segments, or part of segments, which contain records ingested at generation $g$.
+	\item $\theta_S(g)$ is the local start offset for the leader epoch $g$ (inclusive).
+	\item $\theta_E(g)$ is the local end offset for the leader epoch $g$ (inclusive).
+\end{itemize} 
 
 \begin{figure}[h!]
 	\centering
-	\includegraphics[scale=0.6]{become-leader.png}
+	\includegraphics[scale=0.65]{become-leader.png}
 	\captionof{figure}{.}
 	\label{fig:become-leader}
 \end{figure}
 
 \begin{outline}[enumerate]
-	\1 \textbf{Case \circled{A}}: A common epoch $g$ exists. The end offset for the segments offloaded at that generation is $\theta$, and the local start offset at generation $g$ is $\theta + 1$.
-	\1 \textbf{Case \circled{B}}:  A common epoch $g$ exists. The end offset $\theta + \Delta$ is ahead of the local start offset $\theta$ at generation $g$. This can happen for instance if a tiered segment was not deleted on the local replica, and/or the base offsets of the segments of the replica were not perfectly aligned with those of the previous leader, resulting in shifted roll-overs.
-	\1 \textbf{Case \circled{C}}:  A common epoch $g$ exists. The end offset $\theta + \Delta$ is ahead of the local log end offset. This can happen if the replica was previously out of the ISR set, and uncleanly elected as a leader.
-	\1 \textbf{Case \circled{D}}:  A common epoch $g$ exists. There is a gap between the end offset of the segments offloaded and the local start offset at generation $g$. This could happen in pathological cases, for instance after a replica recovered from a hard failure.
+	\1 \textbf{Case \circled{A}}: A common epoch $g$ exists and $\theta_R(g) = \theta_S(g) - 1$.
+	\1 \textbf{Case \circled{B}}:  A common epoch $g$ exists and $\theta_E(g) \geq \theta_R(g) \geq \theta_S(g)$. This can happen for instance if a tiered segment was not deleted on the local replica, and/or the base offsets of the segments of the replica were not perfectly aligned with those of the previous leader, resulting in shifted roll-overs and local segment deletion.
+	\1 \textbf{Case \circled{C}}:  A common epoch $g$ exists and $\theta_R(g) > \theta_E(g) \geq \theta_S(g)$. This can happen if the replica was previously out of the ISR set, and uncleanly elected as a leader.
+	\1 \textbf{Case \circled{D}}:  A common epoch $g$ exists and $\theta_R(g) < \theta_S(g) - 1$. This could happen in pathological cases, for instance if log retention periods diverge between brokers.
 	\1 \textbf{Case \circled{E}}:  No common epoch can be found between tiered segments and the local epochs, no part of the local log is present in the tiered storage. That could be the case that historically, no part of the replica has ever been offloaded \circled{E.1}. However, there could be tiered segments which lineage was removed from the local epoch cache (log prefix truncation via \texttt{LeaderEpochFileCache\#truncateFromStart}) \circled{E.2}.
 \end{outline}
 
@@ -125,10 +134,11 @@ In order to handle case \circled{E.2}, the epoch to start offset vectors for the
 The new leader will then derive the \textit{remote end offset} (\textbf{REO}), which is relative to a given leader epoch.
 
 \begin{outline}[enumerate]
-	\1 \textbf{Case \circled{A}}: The REO can be set to $\theta$ (by convention, the REO will be inclusive, if not, $\theta +1$ can be adopted).
-	\1 \textbf{Case \circled{B}}: The records present simultaneously in the external and local storage are guaranteed to match. The remote end offset will be set to $\theta+\Delta$. Any segment with base offset and end offset within the range $[\theta, \theta+\Delta]$ will not be offloaded.
-	\1 \textbf{Case \circled{C}}: In this case, we will want to consider the lineage of the new leader to be consistent with the existing behaviour with local segments. The REO will be set to $\theta - \Delta$, and the portion of the log in the range $[\theta - \Delta + 1, \theta]$ is not part of the current lineage (but is not deleted, because it can be reinstated as a part of the log by another leader in the future).
-	\1 \textbf{Case \circled{D}}: The REO is set to $\theta$. No assumption should be made in other part of the system that the log concatenated from tiered and local segments is contiguous.
+	\1 \textbf{Case \circled{A}}: The REO can be set to $\theta_R$ (by convention, the REO will be inclusive, if not, $\theta_R = \theta_S +1$ can be adopted).
+	\1 \textbf{Case \circled{B}}: The records present simultaneously in the external and local storage are guaranteed to match. The remote end offset will be set to $\theta_R$. Any segment with base offset and end offset within the range $[\theta_S; \theta_R]$ will not be offloaded.
+	\1 \textbf{Case \circled{C}}: In this case, we will want to consider the lineage of the new leader to be consistent with the existing behaviour with local segments. The REO will be set to $\theta_E$, and the portion of the log in the range $[\theta_E + 1, \theta_R]$ will not be part of the current lineage (but is not deleted, because it can be reinstated as a part of the log by another leader in the future).
+	\1 \textbf{Case \circled{D}}: The REO will be set to $\theta_R$. No assumption should be made in other part of the system that the log concatenated from tiered and local segments is contiguous.
+	\1 \textbf{Case \circled{E}}: The REO will be set to $-1$.
 \end{outline}
 
 \subsubsection{REO resolution algorithm}
@@ -170,7 +180,7 @@ An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the
 			\State $\theta_R \leftarrow \psi(g_i)$
 			\State $\theta_E \leftarrow  \textsc{EpochEndOffset}(h_j)$
 			\\
-			\If{$\theta_R \geq \theta_E$}
+			\If{$\theta_R > \theta_E$}
 			\State \Return $\theta_E - 1$ // Case \circled{C}
 			\Else
 			\State \Return $\theta_R$ // Case \circled{A}, \circled{B}, \circled{D}
@@ -180,23 +190,22 @@ An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the
 	\end{algorithmic}	
 \end{algorithm}
 
-Looking back at the previous example, if a replica happened to become the leader of the topic-partition, it would use its local epoch cache and the history of lineage of this topic-partition covered in the tiered storage, represented as a graph $\mathcal{G}=(\theta,g)$ which provides the ranges of offsets of the tiered segments along with the epoch of the leader which offloaded them.
 
-guarantee the following property: for any given offset in a segment of the leader replica which is present in the tiered storage, prior offsets which make up the contemporary\footnote{i.e. excluding segments evicted from the local and/or tiered storage} lineage of the leader replica are also present in the tiered storage. Informally, that means there is no "gap" in the range of offsets which are present in the tiered storage, without a segment which would only be available locally between two tiered segments.
+\subsection{Reconciliation between local and tiered segments on \texttt{become-follower}}
 
-\subsubsection{Remote end offset resolution on become-follower}
-
-When replica 1 becomes online and initiates replication from replica 2, it needs to know:
+When a replica initiates replication from a leader, it needs to know which part of its lineage is tiered, to avoid replicating it from the leader, or expecting the tiered segments not be found locally. This requires two things:
 
 \begin{outline}[enumerate]
-\1 Its truncation and fetch offset, this is implemented with the truncation protocol;
-\1 The range of offsets which is already tiered, and which should not be replicated from the leader.
+\1 Reconciliate its local segments with the lineage $\mathcal{L}$ of the leader it replicates from. This is implemented with the truncation protocol.
+\1 Reconciliate 
 \end{outline}
 
 
 All the follower need to know is the last offset of the latest tiered segment according to the current replica lineage. In the case of the lineage tree in figure \ref{fig:lineage-tree-1}, that would be $\theta_6$. Note that this is not necessarily the \textit{latest} segment offloaded, nor the largest offset of all the segments offloaded for that topic-partition ($\theta_6 < \theta_5$).
 
+Consider the example described in section \ref{lineage_tree}. 
 
+\newpage
 \section{Garbage collection of orphan segments}
 
 \newpage
