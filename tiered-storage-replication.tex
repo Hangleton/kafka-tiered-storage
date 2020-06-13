@@ -97,13 +97,13 @@ The content of the tiered storage after these events is represented in \textbf{f
 \end{figure}
 
 \newpage
-\section{Analysis of lineage reconcilation with tiered segments}
+\section{Lineage reconcilation with tiered segments}
 
 \subsection{Reconcilation between local and tiered segments on \texttt{become-leader}}
 
 \subsubsection{Remote End Offset}
 
-A replica which becomes the leader of a topic-partition, and detects tiered segments for that topic-partition, tries to identify which parts of its lineage are present in the tiered storage. 
+A replica which becomes the leader of a topic-partition, and detects some segments for that topic-partition are tiered, needs to identify which parts of its lineage are present in the tiered storage. 
 
 A proposed approach is as follows: the replica which becomes a leader will try to find a leader epoch which is common to tiered segments and the local epoch cache, following an approach similar to the resolution of the truncation offset \cite{KIP279}. It then chooses an offset depending on the relative position of the latest offset of the tiered segments and the local end offset.
 
@@ -142,7 +142,7 @@ The new leader will then derive the \textit{remote end offset} (\textbf{REO}), w
 	\1 \textbf{Case \circled{E}}: The REO will be set to $-1$.
 \end{outline}
 
-\subsubsection{REO resolution algorithm}
+\subsubsection{REO resolution}
 
 An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the previous discussion is provided here. The following conventions are used:
 
@@ -154,7 +154,7 @@ An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the
 \end{itemize} 
 
 \begin{algorithm}[h!]
-	\caption{Resolution of the replica's REO on \texttt{LeaderAndIsr\#become-leader}}
+	\caption{Resolution of the replica's REO on \texttt{become-leader}}
 	\label{alg:reo}
 	
 	\begin{algorithmic}[1]
@@ -194,7 +194,7 @@ An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the
 
 \subsection{Reconciliation between local and tiered segments on \texttt{become-follower}}
 
-\subsubsection{Post-truncation REO propagation}
+\subsubsection{REO propagation}
 
 When a replica initiates replication from a leader, it needs to know which part of the leader's lineage is tiered, to avoid replicating the corresponding segments from the leader.
 
@@ -204,29 +204,33 @@ In order to adjust its initial fetch offset, the follower needs to know what the
 
 There are similarities between the information required in our case and that of the truncation algorithm. The design alternative\footnote{https://tinyurl.com/yatnunsh} \circled{2} from KIP-279 \cite{KIP279} discusses how sub-sequences of the leader epoch to offset vector lists could be exchanged between a leader and follower in order to resolve the truncation offset. Our requirement is slightly different, since we only need the part of the lineage $\mathcal{L}$ between two defined offsets: $\theta_T(g)$ and REO.
 
-The characterizations of $\mathcal{L}$ are stored in the leader epoch cache, which is maintained locally by each replica. We chose not to create and maintain a copy of the leader epoch cache in an alternative destination, as this would require to implement the required coordination in the system to ensure both copy are kept in sync. Therefore, in order to access $\mathcal{L}$, the follower needs to retrieve it from the leader. There are multiple ways to do so.
+The characterizations of $\mathcal{L}$ are stored in the leader epoch cache, which is maintained locally by each replica. We chose not to create and maintain a copy of the leader epoch cache in an alternative destination, as this would require to implement the required coordination in the system to ensure both copy are kept in sync. Therefore, in order to access $\mathcal{L}$, the follower needs to retrieve it from the leader.
 
 We propose here to add a new API as follows. Given:
 
 \begin{itemize}
 \item Two offsets $\theta_1$ and $\theta_2$ s.t. $\theta_1 \leq \theta_2$;
-\item A leader epoch cache $\mathcal{L}=\mathcal{G}\times\Theta=(g_i, \theta_S(g_i))_{i \in \{1,...,n\}}$
+\item A leader epoch cache $\mathcal{L}=\mathcal{G}\times\Theta=(g_i, \theta_S(g_i))_{i \in \{1,...,n\}}$;
 \end{itemize}
 
 The API returns the sublist $\mathcal{L'}=(g_i, \theta_S(g_i))_{i \in \{k,...,l\}} \sqsubset \mathcal{L}$ s.t. $\left\{
-\begin{array}{rcl}
-\theta_S(g_k)&=&\max \{g \in \mathcal{G} | \theta_S(g) \leq \theta_1\}\\
-\theta_S(g_l)&=&\max \{g \in \mathcal{G} | \theta_S(g) \geq \theta_2\}\\
+\begin{array}{l}
+g_k=\max \texttt{} \{g \in \mathcal{G} \texttt{ } | \texttt{ } \theta_S(g) \leq \theta_1\}\\
+g_l=\min \texttt{} \{g \in \mathcal{G} \texttt{ } | \texttt{ } \theta_S(g) \geq \theta_2\}\\
 \end{array}
 \right.$
 
+Let's call the API \texttt{OffsetForLeaderEpochList}\footnote{This is just an example. Alternatively, could an existing API be extended, without incurring a payload penalty in non-tiered scenarios?} in this discussion.
 
-%$\theta_S(g_k) = max \{g \in \mathcal{G} | \theta_S(g) \leq \theta_1\}$ and $\theta_S(g_l) = max \{g \in \mathcal{G} | \theta_S(g) \geq \theta_2\}$.  
+
 
 The list of vectors for the range $[\theta_T(g); REO]$ could be arbitrary long
 
 
 Consider the example described in section \ref{lineage_tree}. 
+
+\newpage
+\section{Coordination for Data Tiering}
 
 \newpage
 \section{Garbage collection of orphan segments}
