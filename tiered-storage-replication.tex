@@ -198,11 +198,33 @@ An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the
 
 When a replica initiates replication from a leader, it needs to know which part of the leader's lineage is tiered, to avoid replicating the corresponding segments from the leader.
 
-Through the truncation protocol, the follower and leader collaboratively resolves the truncation offset $\theta_T(g)$ for the most recent generation $g$ they have in common. With local segments, the follower then starts fetching from the offset $\theta_T(g)$. Assume a segment which includes the truncation offset is tiered. The leader may contain (or not) a local copy of a segment which includes this offset. Irrespective of local availability, we expect the follower not to replicate it.
+Through the truncation protocol, the follower and leader collaboratively resolves the truncation offset $\theta_T(g)$ for the most recent generation $g$ they have in common. With local segments, the follower then starts fetching from the offset $\theta_T(g)$. Assume a segment which includes the truncation offset is tiered. The leader may contain a local copy of a segment which includes this offset, or it may only be available in the tiered storage. Irrespective of local availability, we expect the follower not to replicate it.
 
-In order to adjust its initial fetch offset, the follower needs to know what the REO on the leader is. There are multiple approaches for the leader to provide followers with its REO.
+In order to adjust its initial fetch offset, the follower needs to know what the REO on the leader is. Additionally, the lineage characterization of the leader replica between the truncation offset and the REO needs to be copied and recorded by the follower. This is to preserve the current behaviour; for instance, to ensure the truncation protocol is not violated if the follower becomes a leader in the future, and its lineage between the truncation offset and the REO needs to be inspected to satisfy \texttt{OffsetsForLeaderEpoch} requests. Note that the lineage of the follower replica before the truncation offset is guaranteed to be identical to that of the leader.
 
-One of it could be 
+There are similarities between the information required in our case and that of the truncation algorithm. The design alternative\footnote{https://tinyurl.com/yatnunsh} \circled{2} from KIP-279 \cite{KIP279} discusses how sub-sequences of the leader epoch to offset vector lists could be exchanged between a leader and follower in order to resolve the truncation offset. Our requirement is slightly different, since we only need the part of the lineage $\mathcal{L}$ between two defined offsets: $\theta_T(g)$ and REO.
+
+The characterizations of $\mathcal{L}$ are stored in the leader epoch cache, which is maintained locally by each replica. We chose not to create and maintain a copy of the leader epoch cache in an alternative destination, as this would require to implement the required coordination in the system to ensure both copy are kept in sync. Therefore, in order to access $\mathcal{L}$, the follower needs to retrieve it from the leader. There are multiple ways to do so.
+
+We propose here to add a new API as follows. Given:
+
+\begin{itemize}
+\item Two offsets $\theta_1$ and $\theta_2$ s.t. $\theta_1 \leq \theta_2$;
+\item A leader epoch cache $\mathcal{L}=\mathcal{G}\times\Theta=(g_i, \theta_S(g_i))_{i \in \{1,...,n\}}$
+\end{itemize}
+
+The API returns the sublist $\mathcal{L'}=(g_i, \theta_S(g_i))_{i \in \{k,...,l\}} \sqsubset \mathcal{L}$ s.t. $\left\{
+\begin{array}{rcl}
+\theta_S(g_k)&=&\max \{g \in \mathcal{G} | \theta_S(g) \leq \theta_1\}\\
+\theta_S(g_l)&=&\max \{g \in \mathcal{G} | \theta_S(g) \geq \theta_2\}\\
+\end{array}
+\right.$
+
+
+%$\theta_S(g_k) = max \{g \in \mathcal{G} | \theta_S(g) \leq \theta_1\}$ and $\theta_S(g_l) = max \{g \in \mathcal{G} | \theta_S(g) \geq \theta_2\}$.  
+
+The list of vectors for the range $[\theta_T(g); REO]$ could be arbitrary long
+
 
 Consider the example described in section \ref{lineage_tree}. 
 
