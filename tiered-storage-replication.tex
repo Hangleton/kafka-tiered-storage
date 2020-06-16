@@ -37,15 +37,15 @@
 \section{Motivation}
 \epigraph{\textit{"At its heart a Kafka partition is a replicated log"}}{Apache Kafka online documentation \cite{RD1}}
 
-As stated in the reference documentation and echoed in \cite{KDG}, replication in Apache Kafka is one of its most fundamental characteristic. The replication protocol which Kafka implements and the guarantees it provides are well documented \cite{KIP101} \cite{KIP279}, and explains how and why a consistent lineage for a topic-partition is preserved across its replicas irrespective of the nature and frequency of fail-overs this topic-partition experiences. 
+As stated in the reference documentation and echoed in \cite{KDG}, replication in Apache Kafka is one of its most fundamental characteristic. The replication protocol which Kafka implements and the guarantees it provides are well documented, and explains how and why a consistent lineage for a topic-partition is preserved across its replicas irrespective of the nature and frequency of fail-overs this topic-partition experiences \cite{KIP101}\cite{KIP279}.
 
-Introducing a feature which would weaken the replication guarantees offered by Kafka is a red herring. Over time, Kafka gracefully evolved and built on top of existing replication protocol to strengthen replication semantic  One of the premise of the integration of data tiering in Apache Kafka is to provide users with a uniform experience of access to data irrespective of its provenance (the storage tier where it comes from). This especially means data lineage is kept consistent when tiered segments are the source of data and the specifications which apply to local replicas are still honored when tiered segments contribute to a replica's lineage.
+Over time, Kafka gracefully evolved and built on top of existing replication protocol to strengthen replication semantic. Introducing a feature which would weaken the replication guarantees offered by Kafka would not be acceptable. One of the premise of the integration of data tiering in Apache Kafka is to provide users with a uniform experience of access to data irrespective of its provenance (the storage tier where it comes from). This requires the data lineage to be kept consistent when information is read from tiered segments in addition to local segments. The specifications which apply to local replicas are still honored when tiered segments contribute to a replica's lineage.
 
-This document assumes some level of familiarity with the replication protocol implemented in Kafka and how replica lineage is maintained across replicas. At a very high level, this protocol is based on \textit{log truncation}, which relies on replica history, materialized by a list of generation to start offset vectors, which evolves with cluster events and leadership migration. At a given point in time, the lineage of the log of a topic-partition is that of the leader replica of that topic-partition. It is possible for the end offset of the log to decrease when leadership of a topic-partition is migrated.
+This document assumes some level of familiarity with the replication protocol implemented in Kafka and how replica lineage is maintained across replicas. At a very high level, this protocol is based on \textit{log truncation}, which relies on replica history, materialized by a list of generation to start offset vectors, which evolves with cluster events and leadership migration. At a given point in time, the lineage of the log of a topic-partition is that of the leader replica of that topic-partition. It is possible for the end offset of the log to decrease when leadership of a topic-partition is migrated. Truncation prevents divergences between replicas.
 
 \section{Introducing example}
 
-The following discussion is based on an example which consists in a topic-partition with three replicas and which experiences leadership migrations. The lineage tree of the topic-partition is provided in diagrams along with the leadership assignments throughout the sequence of generations for this topic-partition.
+The following discussion is based on an example which consists in a topic-partition with three replicas and multiple leadership migrations. The lineage tree of the topic-partition is provided in diagrams along with the leadership assignments throughout the sequence of generations for this topic-partition.
 
 \subsection{Notations and simplifications}
 
@@ -107,12 +107,12 @@ A replica which becomes the leader of a topic-partition, and detects some segmen
 
 A proposed approach is as follows: the replica which becomes a leader will try to find a leader epoch which is common to tiered segments and the local epoch cache, following an approach similar to the resolution of the truncation offset \cite{KIP279}. It then chooses an offset depending on the relative position of the latest offset of the tiered segments and the local end offset.
 
-Multiple outcomes can result. In figure \ref{fig:become-leader}, the following notations are used:
+Multiple outcomes can result. In figure \ref{fig:become-leader}, the following notations are used.
 
 \begin{itemize}
-	\item $\theta_R(g)$ is the last offset of all segments, or part of segments, which contain records ingested at generation $g$.
-	\item $\theta_S(g)$ is the local start offset for the leader epoch $g$ (inclusive).
-	\item $\theta_E(g)$ is the local end offset for the leader epoch $g$ (inclusive).
+	\item $\theta_R(g)$ is the last offset of all segments, or part of segments, which contain records ingested at or up to generation $g$.
+	\item $\theta_S(g)$ is the local start offset for the leader epoch $g$ (inclusive) on the leader replica.
+	\item $\theta_E(g)$ is the local end offset for the leader epoch $g$ (inclusive) on the leader replica.
 \end{itemize} 
 
 \begin{figure}[h!]
@@ -135,10 +135,10 @@ In order to handle case \circled{E.2}, the epoch to start offset vectors for the
 The new leader will then derive the \textit{remote end offset} (\textbf{REO}), which is relative to a given leader epoch.
 
 \begin{outline}[enumerate]
-	\1 \textbf{Case \circled{A}}: The REO can be set to $\theta_R$ (by convention, the REO will be inclusive, if not, $\theta_R = \theta_S +1$ can be adopted).
-	\1 \textbf{Case \circled{B}}: The records present simultaneously in the external and local storage are guaranteed to match. The remote end offset will be set to $\theta_R$. Any segment with base offset and end offset within the range $[\theta_S; \theta_R]$ will not be offloaded.
-	\1 \textbf{Case \circled{C}}: In this case, we will want to consider the lineage of the new leader to be consistent with the existing behaviour with local segments. The REO will be set to $\theta_E$, and the portion of the log in the range $[\theta_E + 1, \theta_R]$ will not be part of the current lineage (but is not deleted, because it can be reinstated as a part of the log by another leader in the future).
-	\1 \textbf{Case \circled{D}}: The REO will be set to $\theta_R$. No assumption should be made in other part of the system that the log concatenated from tiered and local segments is contiguous.
+	\1 \textbf{Case \circled{A}}: The REO can be set to $\theta_R + 1$ (the same convention as for the LEO is adopted).
+	\1 \textbf{Case \circled{B}}: The records present simultaneously in the external and local storage are guaranteed to match. The remote end offset will be set to $\theta_R + 1$. Any segment with base offset and end offset within the range $[\theta_S; \theta_R]$ will not be offloaded.
+	\1 \textbf{Case \circled{C}}: In this case, we will want to consider the lineage of the new leader to be consistent with the existing behaviour with local segments. The REO will be set to $\theta_E + 1$, and the portion of the log in the range $[\theta_E + 1, \theta_R]$ will not be part of the current lineage (but is not deleted, because it can be reinstated as a part of the log by another leader in the future).
+	\1 \textbf{Case \circled{D}}: The REO will be set to $\theta_R + 1$. No assumption should be made in other part of the system that the log concatenated from tiered and local segments is contiguous.
 	\1 \textbf{Case \circled{E}}: The REO will be set to $-1$.
 \end{outline}
 
@@ -182,16 +182,16 @@ An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the
 			\State $\theta_E \leftarrow  \textsc{EndOffsetFor}(h_j)$
 			\\
 			\If{$\theta_R > \theta_E$}
-			\State \Return $\theta_E - 1$ // Case \circled{C}
+			\State \Return $\theta_E$ // Case \circled{C}
 			\Else
-			\State \Return $\theta_R$ // Case \circled{A}, \circled{B}, \circled{D}
+			\State \Return $\theta_R + 1$ // Case \circled{A}, \circled{B}, \circled{D}
 			\EndIf
 			\\
 		\EndFunction
 	\end{algorithmic}	
 \end{algorithm}
 
-
+\newpage
 \subsection{Reconciliation between local and tiered segments on \texttt{become-follower}}
 
 \subsubsection{REO propagation}
@@ -202,32 +202,35 @@ Through the truncation protocol, the follower and leader collaboratively resolve
 
 In order to adjust its initial fetch offset, the follower needs to know what the REO on the leader is. Additionally, the lineage characterization of the leader replica between the truncation offset and the REO needs to be copied and recorded by the follower. This is to preserve the current behaviour; for instance, to ensure the truncation protocol is not violated if the follower becomes a leader in the future, and its lineage between the truncation offset and the REO needs to be inspected to satisfy \texttt{OffsetsForLeaderEpoch} requests. Note that the lineage of the follower replica before the truncation offset is guaranteed to be identical to that of the leader.
 
-There are similarities between the information required in our case and that of the truncation algorithm. The design alternative\footnote{https://tinyurl.com/yatnunsh} \circled{2} from KIP-279 \cite{KIP279} discusses how sub-sequences of the leader epoch to offset vector lists could be exchanged between a leader and follower in order to resolve the truncation offset. Our requirement is slightly different, since we only need the part of the lineage $\mathcal{L}$ between two defined offsets: $\theta_T(g)$ and REO.
+There are similarities between the information required in our case and that of the truncation algorithm. The design alternative\footnote{https://tinyurl.com/yatnunsh} \circled{2} from KIP-279 \cite{KIP279} discusses how sub-sequences of the leader epoch to offset vector lists could be exchanged between a leader and follower in order to resolve the truncation offset. Our requirement is slightly different, since we only need the part of the lineage $\mathcal{L}$ between two defined offsets: $\theta_{T}$ and $\theta_{REO}$.
 
 The characterizations of $\mathcal{L}$ are stored in the leader epoch cache, which is maintained locally by each replica. We chose not to create and maintain a copy of the leader epoch cache in an alternative destination, as this would require to implement the required coordination in the system to ensure both copy are kept in sync. Therefore, in order to access $\mathcal{L}$, the follower needs to retrieve it from the leader.
 
-We propose here to add a new API as follows. Given:
-
-\begin{itemize}
-\item Two offsets $\theta_1$ and $\theta_2$ s.t. $\theta_1 \leq \theta_2$;
-\item A leader epoch cache $\mathcal{L}=\mathcal{G}\times\Theta=(g_i, \theta_S(g_i))_{i \in \{1,...,n\}}$;
-\end{itemize}
-
-The API returns the sublist $\mathcal{L'}=(g_i, \theta_S(g_i))_{i \in \{k,...,l\}} \sqsubset \mathcal{L}$ s.t. $\left\{
+We propose the following approach. When the follower makes a \texttt{FetchRequest} starting with the truncation offset $\theta_T$, and the leader detects that $\theta_T < \theta_{REO}$, the \texttt{FetchResponse} returns a specific error which contains $\theta_{REO}$ and the part of the epoch cache between $\theta_T$ and $\theta_{REO}$. More formally, if the leader epoch cache is  $\mathcal{L}=\mathcal{G}\times\Theta=(g_i, \theta_S(g_i))_{i \in \{1,...,n\}}$, the response would contain the sublist $\mathcal{L'}=(g_i, \theta_S(g_i))_{i \in \{k,...,l\}} \sqsubset \mathcal{L}$ s.t. $\left\{
 \begin{array}{l}
-g_k=\max \texttt{} \{g \in \mathcal{G} \texttt{ } | \texttt{ } \theta_S(g) \leq \theta_1\}\\
-g_l=\min \texttt{} \{g \in \mathcal{G} \texttt{ } | \texttt{ } \theta_S(g) \geq \theta_2\}\\
+g_k=\max \texttt{} \{g \in \mathcal{G} \texttt{ } | \texttt{ } \theta_S(g) \leq \theta_{REO}\}\\
+g_l=\min \texttt{} \{g \in \mathcal{G} \texttt{ } | \texttt{ } \theta_S(g) \geq \theta_T\}\\
 \end{array}
 \right.$
 
-Let's call the API \texttt{OffsetForLeaderEpochList}\footnote{This is just an example. Alternatively, could an existing API be extended, without incurring a payload penalty in non-tiered scenarios?} in this discussion.
+Consider the example described in section \ref{lineage_tree}. Assume the replica becomes online and starts replicating from replica 2.
 
+\begin{figure}[H]
+	\centering
+	\includegraphics[scale=0.45]{lineage-tree-2.png}
+	\captionof{figure}{}
+	\label{fig:lineage-tree-2}
+\end{figure}
 
+Two RPCs from the follower are required to reconcile the current log lineage.
 
-The list of vectors for the range $[\theta_T(g); REO]$ could be arbitrary long
+\begin{figure}[H]
+	\centering
+	\includegraphics[scale=0.5]{RPCs.png}
+	\captionof{figure}{}
+	\label{fig:rpc}
+\end{figure}
 
-
-Consider the example described in section \ref{lineage_tree}. 
 
 \newpage
 \section{Coordination for Data Tiering}
