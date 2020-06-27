@@ -51,7 +51,7 @@ The following discussion is based on an example which consists in a topic-partit
 
 \textbf{Serialized offsets}
 
-We will informally select offsets from the available replicas at points of interest. An offset is written "$\theta$" and informally indexed such that $\theta_{i+1}$ is written on a replica "after" $\theta_i$ for any given index $i$. The use of leader epochs makes this serialization possible and ensure the word \textit{after} is meaningful in this context. Note that $(\theta_i)_{i \in \mathbb{N}}$ is not necessarily monotonic. 
+In this example, offsets are selected from the available replicas at points of interest. An offset is written "$\theta$" and informally indexed such that $\theta_{i+1}$ is written on a replica "after" $\theta_i$ for any given index $i$. The use of leader epochs makes this serialization possible and ensure the word \textit{after} is meaningful in this context. Note that $(\theta_i)_{i \in \mathbb{N}}$ is not necessarily monotonic. 
 
 \textbf{Generations}
 
@@ -105,28 +105,30 @@ The content of the tiered storage after these events is represented in \textbf{f
 
 A replica which becomes the leader of a topic-partition, and detects some segments for that topic-partition are tiered, needs to identify which parts of its lineage are present in the tiered storage. 
 
-A proposed approach is as follows: the replica which becomes a leader will try to find a leader epoch which is common to tiered segments and the local epoch cache, following an approach similar to the resolution of the truncation offset \cite{KIP279}. It then chooses an offset depending on the relative position of the latest offset of the tiered segments and the local end offset.
+As such, the replica which becomes leader needs to find the latest epoch which is common to tiered segments and the local epoch cache, following an approach similar to the resolution of the truncation offset \cite{KIP279}. It then resolves an offset depending on the relative position of the latest offset of the tiered segments and the local end offset at generation $g$.
 
-Multiple outcomes can result. In figure \ref{fig:become-leader}, the following notations are used.
+The potential use cases are enumerated figure \ref{fig:become-leader}. Note that the configurations \circled{B}, \circled{C}, \circled{D}, \circled{E}, \circled{F} and \circled{G} correspond to the interval trichotomy and altogether, guarantee the exhaustive coverage (\cite{CLR} p.349) of all possible strutural cases. Additionally, note that figure \ref{fig:become-leader} does \textit{not} represent segments but sections of the log which were produced at a given generation. In order to refer to the offsets of interest, the following notations are used:
 
 \begin{itemize}
-	\item $\theta_R(g)$ is the last offset of all segments, or part of segments, which contain records ingested at or up to generation $g$.
-	\item $\theta_S(g)$ is the local start offset for the leader epoch $g$ (inclusive) on the leader replica.
-	\item $\theta_E(g)$ is the local end offset for the leader epoch $g$ (inclusive) on the leader replica.
+	\item $\hat{\theta}_S(g)$ is the first offset for the generation $g$ in the tiered storage.
+	\item $\hat{\theta}_E(g)$ is the last offset for the generation $g$ in the tiered storage.
+	\item $\theta_{l,S}(g)$ is the local start offset for the leader epoch $g$ (inclusive) on the leader replica.
+	\item $\theta_{l,E}(g)$ is the local end offset for the leader epoch $g$ (inclusive) on the leader replica.
 \end{itemize} 
 
 \begin{figure}[h!]
 	\centering
-	\includegraphics[scale=0.65]{become-leader.png}
+	\includegraphics[scale=0.55]{become-leader.png}
 	\captionof{figure}{.}
 	\label{fig:become-leader}
 \end{figure}
 
 \begin{outline}[enumerate]
-	\1 \textbf{Case \circled{A}}: A common epoch $g$ exists and $\theta_R(g) = \theta_S(g) - 1$.
-	\1 \textbf{Case \circled{B}}:  A common epoch $g$ exists and $\theta_E(g) \geq \theta_R(g) \geq \theta_S(g)$. This can happen for instance if a tiered segment was not deleted on the local replica, and/or the base offsets of the segments of the replica were not perfectly aligned with those of the previous leader, resulting in shifted roll-overs and local segment deletion.
-	\1 \textbf{Case \circled{C}}:  A common epoch $g$ exists and $\theta_R(g) > \theta_E(g) \geq \theta_S(g)$. This can happen if the replica was previously out of the ISR set, and uncleanly elected as a leader.
-	\1 \textbf{Case \circled{D}}:  A common epoch $g$ exists and $\theta_R(g) < \theta_S(g) - 1$. This could happen in pathological cases, for instance if log retention periods diverge between brokers.
+	\1 \textbf{Case \circled{A}}: $\hat{\theta}_E(g) = \theta_{l,S}(g) - 1$. This can be a usual case encountered when leadership of the topic-partition is migrated to a previously in-sync replica subject to the same local eviction sequence as the previous leader.
+	\1 \textbf{Case \circled{B}}:  $\hat{\theta}_S(g) \leq \theta_{l,S}(g) < \hat{\theta}_E(g) \leq \theta_{l,E}(g)$. This can happen for instance if a tiered segment was not deleted on the new leader replica, or if the base offsets of the segments of the replica were not perfectly aligned with those of the previous leader, resulting in shifted roll-overs and deletion of local segments.
+	\1 \textbf{Case \circled{C}}: $\hat{\theta}_S(g) \leq \theta_{l,S}(g) \leq \theta_{l,E}(g) < \hat{\theta}_E(g)$. This can happen if the new leader replica was previously out of the ISR set, but elected as a leader.
+	\1 \textbf{Case \circled{D}}:  $\hat{\theta}_E(g) < \theta_{l,S}(g)$. A gap separates the local start offset from the latest offset at generation $g$. This could be the result of a misconfiguration which led to the premature eviction of local segments on the new leader replica.
+	\1 \textbf{Case \circled{E}}, \textbf{Case \circled{F}} and \textbf{Case \circled{G}}: Pathological cases where the leader replica contains offsets preceding the earliest offset on the tiered storage at generation $g$. Segment tiering will ensure segments are sequentially delivered to the tiered storage, such that a segment is tiered only if the preceding segment has been successfully offloaded. However, these cases can still happen, for instance if segments were deleted from the tiered storage but kept locally on the leader replica.	
 	\1 \textbf{Case \circled{E}}:  No common epoch can be found between tiered segments and the local epochs, no part of the local log is present in the tiered storage. That could be the case that historically, no part of the replica has ever been offloaded \circled{E.1}. However, there could be tiered segments which lineage was removed from the local epoch cache (log prefix truncation via \texttt{LeaderEpochFileCache\#truncateFromStart}) \circled{E.2}.
 \end{outline}
 
