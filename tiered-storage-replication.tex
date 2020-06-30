@@ -6,6 +6,8 @@
 \usepackage{url}
 \usepackage{booktabs}
 \usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{amssymb}
 \usepackage{nicefrac}
 \usepackage{microtype}
 \usepackage{graphicx}
@@ -97,9 +99,7 @@ The content of the tiered storage after these events is represented in figure \r
 \newpage
 \section{Lineage reconcilation with tiered segments}
 
-\subsection{Reconcilation between local and tiered segments on \texttt{become-leader}}
-
-\subsubsection{Tiered Aggregate}
+\subsection{Reconciliation of the leader replica with the tiered aggregate}
 
 A replica which becomes the leader of a topic-partition, and detects some segments for that topic-partition are tiered, needs to identify which parts of its lineage are present in the tiered storage. 
 
@@ -110,7 +110,7 @@ The similarity observed between the reconciliation of lineage in the cases of us
 The set of segments from a topic-partition which are offloaded to a tiered storage will be referred to as the \textbf{tiered aggregate} of the topic-partition - the result of aggregation of segments from local replicas which contributed to potentially different branches of the log lineage tree.
 
 \paragraph{Notations}
-In the following section of this document, the following notations are used to soften ambiguities. These defined are defined at the time of the resolution $g_c$ (the current leader epoch). Note that $g_c > g$.
+In the following section of this document, the following notations are used to soften ambiguities. These defined are defined at the time of the resolution $g_c$ (the current leader epoch). Note that $g_c > g$, since no record has been ingested (\textit{a fortiori} offloaded) yet at $g_c$ (reconciliation here is assumed to happen on \texttt{become-leader}).
 
 \begin{itemize}
 	\item $\theta_{t,S}(g, g_c)$ is the first offset for the generation $g$ in the tiered aggregate\footnote{Data is assumed to be physically present at that offset.}.
@@ -120,15 +120,15 @@ In the following section of this document, the following notations are used to s
 	\item $\hat{\theta}_{l,S}(g, g_c)$ is the first offset physically present on the local storage for the generation $g$\footnote{This assumes $\theta_{l,S}(g, g_c)$ can be tracked independently from $\hat{\theta}_{l,S}(g, g_c)$. More on this later.}.
 \end{itemize} 
 
-These notations assume the underlying variables are unambiguous. For instance, $\theta_{t,E}(g, g_c)$ assumes a unique well-defined such offset throughout resolution at generation $g_c$. This may not be the case, depending on the guarantees provided by the tiering sub-system, and especially how it fences stale leaders.
+These notations assume the underlying variables are unambiguous. For instance, $\theta_{t,E}(g, g_c)$ assumes a unique well-defined invariable such offset (if it exists). This may not be the case, depending on the guarantees provided by the tiering sub-system, and especially how it fences stale leaders.
 
 \paragraph{Combinations}
-A selected number of combinations of these offsets addressed during the reconciliation between the leader replica and the tiered aggregate are enumerated below and illustated on figure \ref{fig:become-leader}\footnote{\includegraphics[scale=0.3]{tiered.png} tiered; \includegraphics[scale=0.3]{local.png} local.}. Not all structural configurations are considered; however, interval trichotomy (\cite{CLR} p.349) was applied to guarantee the exhaustive coverage of strutural cases involving the presence of local data (\circled{B}, \circled{C}, \circled{D}, \circled{E}, \circled{F} and \circled{G}). Not that $\theta_{t,S}(g, g_c) = \theta_{l,S}(g, g_c)$ in non-pathological cases.
+A selected number of combinations of these offsets addressed during the reconciliation between the leader replica and the tiered aggregate are enumerated below and illustated on figure \ref{fig:become-leader}\footnote{\includegraphics[scale=0.3]{tiered.png} tiered; \includegraphics[scale=0.3]{local.png} local; \includegraphics[scale=0.3]{deleted.png} locally deleted, but part of the leader replica lineage.}. Not all structural configurations are considered; however, interval trichotomy (\cite{CLR} p.349) was applied to guarantee the exhaustive coverage of strutural cases involving the presence of local data (\circled{B}, \circled{C}, \circled{D}, \circled{E}, \circled{F} and \circled{G}). Not that $\theta_{t,S}(g, g_c) = \theta_{l,S}(g, g_c)$ in non-pathological cases.
 
 \begin{figure}
 	\centering
 	\includegraphics[scale=0.50]{become-leader.png}
-	\captionof{figure}{Possible configurations between a local replica and the tiered aggregate at resolution time. Segments are not represented, only sections of the log at the generation considered. Continuity of the tiered aggregate at that generation is assumed. Generations are not written with offsets to make the notations less cluttered.}
+	\captionof{figure}{Some possible configurations of a local replica and the tiered aggregate at resolution time. Segments are not represented, only sections of the log at the generation considered. Interval trichotomy is used in case of local data to ensure exhaustive coverage. Continuity of the tiered aggregate at that generation is assumed. Generations are not written with offsets to make the notations less cluttered.}
 	\label{fig:become-leader}
 \end{figure}
 
@@ -137,7 +137,7 @@ A selected number of combinations of these offsets addressed during the reconcil
 	\1 \textbf{Case \circled{B}}:  $\theta_{t, S}(g, g_c) \leq \hat{\theta}_{l,S}(g, g_c) < \theta_{t,E}(g, g_c) \leq \theta_{l,E}(g, g_c)$. This can happen for instance if a tiered segment was not deleted on the new leader replica, or if the base offsets of the segments of the replica were not perfectly aligned with those of the previous leader, resulting in shifted roll-overs and deletion of local segments.
 	\1 \textbf{Cases \circled{C}, \circled{I}}: $\theta_{t,S}(g, g_c) \leq \hat{\theta}_{l,S}(g, g_c) \leq \theta_{l,E}(g, g_c) < \theta_{t,E}(g, g_c)$. This can happen if the new leader replica was out of ISR before election.
 	\1 \textbf{Case \circled{D}}:  $\theta_{t,E}(g, g_c) < \hat{\theta}_{l,S}(g, g_c)$. A gap separates the local start offset from the latest offset at generation $g$. This could be the result of a misconfiguration which led to the premature eviction of local segments on the new leader replica.
-	\1 \textbf{Cases \circled{E}, \circled{F}, \circled{G}, \circled{L}}: $\hat{\theta}_{l,S}(g, g_c) < \theta_{t, S}(g, g_c)$. Pathological cases where the leader replica contains offsets preceding the earliest offset on the tiered storage at generation $g$. Segment tiering will ensure segments are sequentially delivered to the tiered storage, such that a segment is tiered only if the preceding segment has been successfully offloaded. However, these cases can still happen, for instance if segments were deleted from the tiered storage but kept locally on the leader replica.	
+	\1 \textbf{Cases \circled{E}, \circled{F}, \circled{G}, \circled{L}}: $\theta_{l,S}(g, g_c) \leq \hat{\theta}_{l,S}(g, g_c) < \theta_{t, S}(g, g_c)$. Pathological cases where the leader replica contains offsets preceding the earliest offset on the tiered storage at generation $g$. Segment tiering will ensure segments are sequentially delivered to the tiered storage, such that a segment is tiered only if the preceding segment has been successfully offloaded. However, these cases can still happen, for instance if segments were deleted from the tiered storage but kept locally on the leader replica.	
 	\1 \textbf{Case \circled{H}}: Scenario where start and end offsets are perfectly aligned and no data remains on the leader replica for $g$.
 	\1 \textbf{Case \circled{J}}: $\theta_{t,E}(g, g_c) < \theta_{l,E}(g, g_c)$ and data is locally absent. This case is pathological. Assuming tiering has always been enabled for the topic-partition, the tiering sub-system should ensure that the section $[1 + \theta_{t,E}(g, g_c), \theta_{l,E}(g, g_c)]$ of the log is not locally deleted if not detected as successfully tiered.
 	\1 \textbf{Case \circled{K}}: A pathological case which would have required the leader replica and other replica of the topic-partition disagreed on the start offset of the generation. In order to generate this use case, one would have to enable tiering at some point in the lineage of the log and have experienced deletion of segment on a follower replica before the leader.
@@ -148,115 +148,61 @@ A selected number of combinations of these offsets addressed during the reconcil
 In order to ensure the resolution of the latest generation shared by the leader replica and the tiered aggregate is possible in the absence of local segment for that generation, the full history of the generations of the local replica needs to be available. Currently, when segments are locally deleted, the earliest offset of the leader epoch cache is moved forward to new local start offset, and generations which are not part of the local replica anymore are removed from the cache. These information needs to be preserved in order to support situations where a given generation $g$ is only existing in the tiered storage, yet is the latest generation common to the local replica and the tiered aggregate.
 
 \paragraph{Implications for tiering}
-This enumeration can help derive some operational implications for the tiering sub-system. The resolved end offset of the tiered aggregate eventually resolved by the new leader will be noted $\theta_{l,REO}(g, g_c)$. This \textbf{resolved end offset} is \textit{not} a characteristic of the tiered aggregate alone, and does not necessarily correspond to the physical end offset in the tiered aggregate at the time of resolution and may resolve to different values depending on the leader replica considered.
+This enumeration can help derive some operational implications for the tiering sub-system. The resolved end offset of the tiered aggregate eventually resolved by the new leader will be noted $\theta_{l,REO}(g, g_c)$. This \textbf{remote end offset} is \textit{not} a characteristic of the tiered aggregate alone, and does not necessarily correspond to the physical end offset in the tiered aggregate at the time of resolution and may resolve to different values depending on the leader replica considered.
 
 \begin{outline}[enumerate]
-	\1 \textbf{Case \circled{A}}: $\theta_{l,REO}(g, g_c) = \hat{\theta}_E(g, g_c)$.
-	\1 \textbf{Case \circled{B}}: $\theta_{l,REO}(g, g_c) = \hat{\theta}_E(g, g_c)$.
-	\1 \textbf{Case \circled{C}}: $\theta_{l,REO}(g, g_c) = \theta_{l,E}(g, g_c)$. The section between $[1 + \theta_{l,E}(g, g_c),  \hat{\theta}_E(g, g_c)]$ is not considered to be part of the log lineage by the new leader.
-	\1 \textbf{Case \circled{D}}: The tiering mechanism should be designed to be resilient to that use case.
-	\1 \textbf{Case \circled{E}}: The missing offsets and records between $[\theta_{l,S}(g, g_c),  \hat{\theta}_S(g, g_c) - 1]$ should be offloaded. $\theta_{l,REO}(g, g_c) = \theta_{l,E}(g, g_c)$.
-	\1 \textbf{Case \circled{F}}: The missing offsets and records between $[\theta_{l,S}(g, g_c),  \hat{\theta}_S(g, g_c) - 1]$ should be offloaded. $\theta_{l,REO}(g, g_c) = \hat{\theta}_E(g, g_c)$.
-	\1 \textbf{Case \circled{G}}: $\theta_{l,REO}(g, g_c) = \theta_{l,E}(g, g_c)$. The section of the tiered aggregate past $\theta_{l,E}(g, g_c)$ is not considered to be part of the log lineage by the new leader.
-	\1 \textbf{Case \circled{H}}: $\theta_{l,REO}(g, g_c) = -1$.
+	\1 \textbf{Case \circled{A}}: $\theta_{l,REO}(g, g_c) = \theta_{t,E}(g, g_c)$.
+	\1 \textbf{Case \circled{B}}: $\theta_{l,REO}(g, g_c) = \theta_{t,E}(g, g_c)$.
+	\1 \textbf{Case \circled{C}}: $\theta_{l,REO}(g, g_c) = \theta_{l,E}(g, g_c)$. The section between $[1 + \theta_{l,E}(g, g_c), \theta_{t,E}(g, g_c]$ is not considered to be part of the log lineage by the new leader.
+	\1 \textbf{Case \circled{D}}: $\theta_{l,REO}(g, g_c) = \theta_{t,E}(g, g_c)$. When offsets between $[1 + \theta_{t,E}(g, g_c), \theta_{l,S}(g, g_c) - 1]$ are fetched, the leader should report missing data.
+	\1 \textbf{Cases \circled{E}, \circled{F}}: $\theta_{l,REO}(g, g_c) = \min(\theta_{t,E}(g, g_c), \theta_{l,E}(g, g_c))$. Records for the missing offsets and records between $[\theta_{l,S}(g, g_c),  \theta_{t,S}(g, g_c) - 1]$ should be offloaded.
+	\1 \textbf{Case \circled{G}}: $\theta_{l,REO}(g, g_c) = -1$. The section of the tiered aggregate past $\theta_{l,E}(g, g_c)$ is not considered to be part of the log lineage by the new leader.
+	\1 \textbf{Cases \circled{H}, \circled{I}, \circled{J}, \circled{K}, \circled{L}}: $\theta_{l,REO}(g, g_c) = \min(\theta_{t,E}(g, g_c), \theta_{l,E}(g, g_c))$. The tiered offsets which are not included in the generation $g$ are not considered to be part of the log lineage by the new leader.
+	\1 \textbf{Case \circled{M}}: $\theta_{l,REO}(g, g_c) = -1$.
 \end{outline}
 
 \paragraph{Remark 2} Here, continuity of the tiered aggregate for the records ingested at generation $g$ is assumed. By construction, this is enforced on the local replica in every segment. The tiering mechanism will also ensure continuity is preserved between offloaded segments. However, failure modes were tiering failed locally and result in discontinuity are not impossible. Eventually, the tiering system needs to handle them gracefully, as part of a support for recovery of prior failures.
 
 \paragraph{Remark 3} Reconciliation does not involve checking the content of the data. When offsets are found both locally and externally, they are assumed to match and not diverge by construction, as is the case between replicas based on the guarantees of the replication semantics.
 
-\subsubsection{Reconciliation}
+\paragraph{Remark 4} The REO is used by followers to know which offset to start replicating from. More on this later.
 
-We have seen what configurations can arise when a replica becomes the new leader of a topic-partition and compares its 
+\subsection{Resolution of tiered segments for data fetch}
 
+Let $\mathcal{L}=((g_k,\theta_s(g_k))_{k \in [1..n]}, \theta_{LEO})$ be a characterization of the lineage of the leader replica using leader-epoch to offset vectors from the leader epoch cache.\\
 
+Let $t_i$ be a tiered segment defined by $t_i = (u_i, (\theta_{ij}, g_{ij})_{j \in [1..s_i]}, \theta_{i,s_i + 1} )$ where $u_i$ is a universal identifier of $t_i$, $(\theta_{ij}, g_{ij})_{j \in [1..s_i]}$ is the sequence of offset to generation for the subsequent offsets (inclusive), and $\theta_{s_i+1}$ is the last offset of the segment. Note that $\theta_{i1}$ is the first offset of the segment.
 
+Let $\mathcal{A}$ be the tiered aggregate, \textit{i.e.} the set of tiered segments $t$.
 
-An algorithm to resolve the REO (algorithm \ref{alg:reo}) which derived from the previous discussion is provided here. The following conventions are used:
+Consider a function $f:\begin{array}{lll}
+\mathbb{N}\times\mathbb{N} & \rightarrow & \mathcal{P(A)}\\
+(\theta, g) & \mapsto & \{t_i, i \in [1..m]\}
+\end{array}$ which provides the set of segments from the tiered aggregate which contain a given offset $\theta$ at a generation $g$. Assume $f$ exists in the tiering sub-system.
 
-\begin{itemize}
-	\item $\phi$ is a map such that $\phi(g)$ represents the start offset of generation $g$ in the leader epoch cache.
-	\item $\psi$ is a map such that $\psi(g)$ represents the end offset of all segments tiered for the generation $g$.
-	\item The input of the algorithm are the list of generation to end offset $(g_k, \psi(g_k))_{k \in \{1,...,n\}}$, and the leader epoch cache $(h_l, \phi(h_l))_{l \in \{1,...,m\}}$.
-	\item The function \textsc{EndOffsetFor} corresponds to \texttt{LeaderEpochFileCache\#endOffsetFor} and has implicitly access to the map $\phi$.
-\end{itemize} 
+Consider further the function $g:\begin{array}{lll}
+\mathbb{N} & \rightarrow & \mathbb{N} \\
+\theta & \mapsto & g_k
+\end{array} \textrm{s.t.} \begin{cases}
+\theta_s(g_k) \leq \theta \leq \theta_s(g_{k+1}) & k < n\\
+\theta_s(g_n) \leq \theta \leq \theta_{LEO}       & k = n\\
+-1 & \nexists k
+\end{cases}$ which returns the epoch associated to a given offset $\theta$.
 
-\begin{algorithm}[h!]
-	\caption{Resolution of the replica's REO on \texttt{become-leader}}
-	\label{alg:reo}
-	
-	\begin{algorithmic}[1]
-		\Function{FindRemoteEndOffset}{$(g_k)_{k \in \{1,..,n\}}$, $\psi$, $(h_h)_{h \in \{1,..,m\}}$, $\phi$}
-			\State	$(i,j) \leftarrow (n-1,m-1)$
-			\State	$(g_{-1}, h_{-1}) \leftarrow (-1,-1)$
-			\\
-			\While{$g_i \neq h_j$}
-				\While{$g_i > h_j$}
-					\State $i \leftarrow i - 1$
-				\EndWhile
-				\While{$h_j > g_i$}
-					\State $j \leftarrow j - 1$
-				\EndWhile
-			\EndWhile
-			\\
-			\State // If there is no common lineage, return -1. Note that -1 is already used for sentinel leader epoch in multiple places.
-			\State // Need to check conflicting semantic is avoided.
-			\If{$i = -1$}
-				\State \Return $-1$
-			\EndIf
-			\\
-			\State // Get the latest offset of tiered segments and the local start offset, for the generation $g_i = h_j$.
-			\State $\theta_R \leftarrow \psi(g_i)$
-			\State $\theta_E \leftarrow  \textsc{EndOffsetFor}(h_j)$
-			\\
-			\If{$\theta_R > \theta_E$}
-			\State \Return $\theta_E$ // Case \circled{C}
-			\Else
-			\State \Return $\theta_R + 1$ // Case \circled{A}, \circled{B}, \circled{D}
-			\EndIf
-			\\
-		\EndFunction
-	\end{algorithmic}	
-\end{algorithm}
+A segment $t_i \in f(\theta, g(\theta))$ verifies the fetch request if and only if
+\[P(t_i, \mathcal{L}):
+\begin{cases}
+\forall j \in [1..s_i + 1] & g(\theta_{ij}) \neq -1\\
+& \theta_{i1} \geq \theta_s(g(\theta_{i1}))\\
+& \theta_{i,s_i + 1} \geq \theta_s(g(\theta_{i,s_i + 1}))\\
+\forall j \in [2..s_i] & \theta_{ij} = \theta_s(g(\theta_{ij}))\\
+\end{cases}
+\]
 
-\newpage
-\subsection{Reconciliation between local and tiered segments on \texttt{become-follower}}
+The resolution sub-problem can be formally defined as finding the segments $t_i \in f(\theta, g(\theta))$ which satisfy the property $P(t_i, \mathcal{L})$.
 
-\subsubsection{REO propagation}
+\paragraph{Example}
 
-When a replica initiates replication from a leader, it needs to know which part of the leader's lineage is tiered, to avoid replicating the corresponding segments from the leader.
-
-Through the truncation protocol, the follower and leader collaboratively resolves the truncation offset $\theta_T(g)$ for the most recent generation $g$ they have in common. With local segments, the follower then starts fetching from the offset $\theta_T(g)$. Assume a segment which includes the truncation offset is tiered. The leader may contain a local copy of a segment which includes this offset, or it may only be available in the tiered storage. Irrespective of local availability, we expect the follower not to replicate it.
-
-In order to adjust its initial fetch offset, the follower needs to know what the REO on the leader is. Additionally, the lineage characterization of the leader replica between the truncation offset and the REO needs to be copied and recorded by the follower. This is to preserve the current behaviour; for instance, to ensure the truncation protocol is not violated if the follower becomes a leader in the future, and its lineage between the truncation offset and the REO needs to be inspected to satisfy \texttt{OffsetsForLeaderEpoch} requests. Note that the lineage of the follower replica before the truncation offset is guaranteed to be identical to that of the leader.
-
-There are similarities between the information required in our case and that of the truncation algorithm. The design alternative\footnote{https://tinyurl.com/yatnunsh} \circled{2} from KIP-279 \cite{KIP279} discusses how sub-sequences of the leader epoch to offset vector lists could be exchanged between a leader and follower in order to resolve the truncation offset. Our requirement is slightly different, since we only need the part of the lineage $\mathcal{L}$ between two defined offsets: $\theta_{T}$ and $\theta_{REO}$.
-
-The characterizations of $\mathcal{L}$ are stored in the leader epoch cache, which is maintained locally by each replica. We chose not to create and maintain a copy of the leader epoch cache in an alternative destination, as this would require to implement the required coordination in the system to ensure both copy are kept in sync. Therefore, in order to access $\mathcal{L}$, the follower needs to retrieve it from the leader.
-
-We propose the following approach. When the follower makes a \texttt{FetchRequest} starting with the truncation offset $\theta_T$, and the leader detects that $\theta_T < \theta_{REO}$, the \texttt{FetchResponse} returns a specific error which contains $\theta_{REO}$ and the part of the epoch cache between $\theta_T$ and $\theta_{REO}$. More formally, if the leader epoch cache is  $\mathcal{L}=\mathcal{G}\times\Theta=(g_i, \theta_S(g_i))_{i \in \{1,...,n\}}$, the response would contain the sublist $\mathcal{L'}=(g_i, \theta_S(g_i))_{i \in \{k,...,l\}} \sqsubset \mathcal{L}$ s.t. $\left\{
-\begin{array}{l}
-g_k=\max \texttt{} \{g \in \mathcal{G} \texttt{ } | \texttt{ } \theta_S(g) \leq \theta_{REO}\}\\
-g_l=\min \texttt{} \{g \in \mathcal{G} \texttt{ } | \texttt{ } \theta_S(g) \geq \theta_T\}\\
-\end{array}
-\right.$
-
-Consider the example described in section \ref{lineage_tree}. Assume the replica becomes online and starts replicating from replica 2.
-
-\begin{figure}[H]
-	\centering
-	\includegraphics[scale=0.45]{lineage-tree-2.png}
-	\captionof{figure}{}
-	\label{fig:lineage-tree-2}
-\end{figure}
-
-
-
-\newpage
-\section{Coordination for Data Tiering}
-
-\newpage
-\section{Garbage collection of orphan segments}
 
 \newpage
 \bibliographystyle{plain}
